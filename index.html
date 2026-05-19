@@ -556,6 +556,17 @@ const CLOUDINARY_CONFIG = {
     uploadPreset: "Talkboard",
 };
 
+// ═══════════════════════════════════
+// JSONBIN — shared cloud storage for cards
+// 1. Sign up free at jsonbin.io
+// 2. Dashboard → API Keys → copy Master Key
+// 3. Create Bin → paste [] → copy the Bin ID
+// ═══════════════════════════════════
+const JSONBIN_CONFIG = {
+    apiKey: '$2a$10$1g5sMfPcmPaATRRlRGrXleixlM8k5eOPPvqR35HSQP2ydRvFzjHYe',   // paste your Master Key here
+    binId:  '6a0cde5fee5a733b12e840b1',   // paste your Bin ID here
+};
+
 async function uploadToStorage(dataUrl, filename) {
     const blob = await (await fetch(dataUrl)).blob();
     const form = new FormData();
@@ -568,6 +579,28 @@ async function uploadToStorage(dataUrl, filename) {
     if (!res.ok) throw new Error('Cloudinary upload failed: ' + res.status);
     const data = await res.json();
     return data.secure_url;
+}
+
+async function loadCards() {
+    if (!JSONBIN_CONFIG.apiKey || !JSONBIN_CONFIG.binId) return;
+    try {
+        const res = await fetch(
+            `https://api.jsonbin.io/v3/b/${JSONBIN_CONFIG.binId}/latest`,
+            { headers: { 'X-Master-Key': JSONBIN_CONFIG.apiKey } }
+        );
+        if (!res.ok) throw new Error(res.status);
+        const data = await res.json();
+        const cloudCards = Array.isArray(data.record) ? data.record : [];
+        if (cloudCards.length === 0 && customCards.length > 0) {
+            // First-time migration: push existing local cards up to JSONBin
+            await saveCards();
+        } else {
+            customCards = cloudCards;
+            renderCards();
+        }
+    } catch(e) {
+        console.error('JSONBin load failed:', e);
+    }
 }
 
 // ═══════════════════════════════════
@@ -767,6 +800,7 @@ function init() {
     renderCategoryTabs();
     renderSubCategoryTabs();
     renderCards();
+    loadCards();
 }
 
 function toggleDark() {
@@ -1105,16 +1139,16 @@ function previewImage(e) {
             statusEl.style.color = '#4CAF50';
             statusEl.textContent = '✅ Uploaded';
         } catch (err) {
-            console.error('Firebase upload failed:', err);
-            uploadedImgData = compressed;
-            statusEl.style.color = '#FF9800';
-            statusEl.textContent = '⚠️ Upload failed — saved locally';
+            console.error('Cloudinary upload failed:', err);
+            uploadedImgData = null;
+            statusEl.style.color = '#e53935';
+            statusEl.textContent = '❌ Upload failed — check your Cloudinary settings';
         }
     };
     reader.readAsDataURL(file);
 }
 
-function addCard() {
+async function addCard() {
     const labelEl = document.getElementById('newLabel');
     const label   = labelEl.value.trim();
     if (!label) {
@@ -1149,7 +1183,7 @@ function addCard() {
         });
     }
 
-    saveCards();
+    await saveCards();
     closeModal();
 
     const inSub = allSubCats().find(c => c.id === catId);
@@ -1164,10 +1198,10 @@ function addCard() {
     }
 }
 
-function deleteCard(id) {
+async function deleteCard(id) {
     if (!confirm('Delete this card?')) return;
     customCards = customCards.filter(c => c.id !== id);
-    saveCards();
+    await saveCards();
     renderCards();
 }
 
@@ -1225,12 +1259,12 @@ function handleBatchFiles(event) {
         const reader = new FileReader();
         reader.onload = async ev => {
             const compressed = await compressImage(ev.target.result, 400, 0.78);
-            let imageUrl = compressed;
+            let imageUrl = null;
             try {
                 const fname = `${Date.now()}_${i}_${file.name.replace(/[^a-z0-9._-]/gi, '_')}`;
                 imageUrl = await uploadToStorage(compressed, fname);
             } catch (err) {
-                console.error('Upload failed for', file.name, err);
+                console.error('Cloudinary upload failed for', file.name, err);
             }
             batchItems.push({ id, imageData: imageUrl, label: filenameToLabel(file.name) });
             done++;
@@ -1265,7 +1299,7 @@ function updateBatchLabel(id, value) {
     if (item) item.label = value;
 }
 
-function batchImportAll() {
+async function batchImportAll() {
     if (!batchItems.length) return;
     const catId = document.getElementById('batchCategory').value;
     const now   = Date.now();
@@ -1279,7 +1313,7 @@ function batchImportAll() {
             isCustom:  true,
         });
     });
-    if (!saveCards()) return;
+    if (!await saveCards()) return;
     closeBatchModal();
     const inSub = allSubCats().find(c => c.id === catId);
     if (inSub) {
@@ -1356,7 +1390,7 @@ function handleImportFile(event) {
     reader.readAsText(file);
 }
 
-function importCards(mode) {
+async function importCards(mode) {
     if (!pendingImport) return;
     if (mode === 'replace') {
         if (!confirm(`This will replace all ${customCards.length} of your current cards with the ${pendingImport.length} imported cards. Continue?`)) return;
@@ -1370,7 +1404,7 @@ function importCards(mode) {
         const skipped = pendingImport.length - fresh.length;
         if (skipped) alert(`${fresh.length} cards added. ${skipped} skipped (already existed).`);
     }
-    if (!saveCards()) return;
+    if (!await saveCards()) return;
     closeShareModal();
     setCategory('custom');
 }
@@ -1397,12 +1431,26 @@ function compressImage(dataUrl, maxDim, quality) {
     });
 }
 
-function saveCards() {
+async function saveCards() {
+    try { localStorage.setItem('talkboard_custom', JSON.stringify(customCards)); } catch(e) {}
+    if (!JSONBIN_CONFIG.apiKey || !JSONBIN_CONFIG.binId) return true;
     try {
-        localStorage.setItem('talkboard_custom', JSON.stringify(customCards));
+        const res = await fetch(
+            `https://api.jsonbin.io/v3/b/${JSONBIN_CONFIG.binId}`,
+            {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Master-Key': JSONBIN_CONFIG.apiKey,
+                },
+                body: JSON.stringify(customCards),
+            }
+        );
+        if (!res.ok) throw new Error(res.status);
         return true;
     } catch(e) {
-        alert('⚠️ Could not save cards — storage is full.\n\nTry deleting some cards you no longer need, then import again.');
+        console.error('JSONBin save failed:', e);
+        alert('⚠️ Could not save cards to cloud. Check your internet connection.');
         return false;
     }
 }
