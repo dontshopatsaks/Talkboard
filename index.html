@@ -561,7 +561,7 @@
 //               → Add preset → Signing mode: Unsigned
 // ═══════════════════════════════════
 const CLOUDINARY_CONFIG = {
-    cloudName:    "FordifyL",
+    cloudName:    "dyjvivb2k",
     uploadPreset: "Talkboard",
 };
 
@@ -585,7 +585,10 @@ async function uploadToStorage(dataUrl, filename) {
         `https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/image/upload`,
         { method: 'POST', body: form }
     );
-    if (!res.ok) throw new Error('Cloudinary upload failed: ' + res.status);
+    if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error?.message || 'Upload failed: ' + res.status);
+    }
     const data = await res.json();
     return data.secure_url;
 }
@@ -1151,7 +1154,7 @@ function previewImage(e) {
             console.error('Cloudinary upload failed:', err);
             uploadedImgData = null;
             statusEl.style.color = '#e53935';
-            statusEl.textContent = '❌ Upload failed — check your Cloudinary settings';
+            statusEl.textContent = '❌ ' + err.message;
         }
     };
     reader.readAsDataURL(file);
