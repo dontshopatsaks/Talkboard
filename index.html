@@ -468,6 +468,7 @@
                 <div style="font-size:0.82rem;color:#aaa;margin-top:4px">JPG, PNG, GIF, WebP</div>
                 <input type="file" id="imgUpload" accept="image/*" onchange="previewImage(event)">
                 <img id="imgPreview" class="preview-img" style="display:none" alt="preview">
+                <div id="imgUploadStatus" style="font-size:0.8rem;margin-top:6px;text-align:center;min-height:18px"></div>
             </div>
         </div>
 
@@ -544,6 +545,31 @@
 </div>
 
 <script>
+// ═══════════════════════════════════
+// CLOUDINARY — fill in your values
+// cloud_name : Cloudinary dashboard → top-left
+// uploadPreset : Settings → Upload → Upload presets
+//               → Add preset → Signing mode: Unsigned
+// ═══════════════════════════════════
+const CLOUDINARY_CONFIG = {
+    cloudName:    "FordifyL",
+    uploadPreset: "Talkboard",
+};
+
+async function uploadToStorage(dataUrl, filename) {
+    const blob = await (await fetch(dataUrl)).blob();
+    const form = new FormData();
+    form.append('file', blob, filename);
+    form.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
+    const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/image/upload`,
+        { method: 'POST', body: form }
+    );
+    if (!res.ok) throw new Error('Cloudinary upload failed: ' + res.status);
+    const data = await res.json();
+    return data.secure_url;
+}
+
 // ═══════════════════════════════════
 // DATA
 // ═══════════════════════════════════
@@ -1012,6 +1038,7 @@ function openModal() {
     document.getElementById('imgPreview').style.display = 'none';
     document.getElementById('imgPreview').src = '';
     document.getElementById('imgUpload').value = '';
+    document.getElementById('imgUploadStatus').textContent = '';
     document.getElementById('modalOverlay').classList.add('visible');
 }
 
@@ -1045,6 +1072,7 @@ function editCard(id) {
         prev.src = '';
     }
     document.getElementById('imgUpload').value = '';
+    document.getElementById('imgUploadStatus').textContent = '';
     document.getElementById('modalOverlay').classList.add('visible');
 }
 
@@ -1060,12 +1088,28 @@ function handleOverlayClick(e) {
 function previewImage(e) {
     const file = e.target.files[0];
     if (!file) return;
+    uploadedImgData = null;
+    const statusEl = document.getElementById('imgUploadStatus');
+    statusEl.textContent = '';
     const reader = new FileReader();
     reader.onload = async ev => {
-        uploadedImgData = await compressImage(ev.target.result, 400, 0.78);
+        const compressed = await compressImage(ev.target.result, 400, 0.78);
         const prev = document.getElementById('imgPreview');
-        prev.src = uploadedImgData;
+        prev.src = compressed;
         prev.style.display = 'block';
+        statusEl.style.color = '#888';
+        statusEl.textContent = '⏳ Uploading…';
+        try {
+            const fname = Date.now() + '_' + file.name.replace(/[^a-z0-9._-]/gi, '_');
+            uploadedImgData = await uploadToStorage(compressed, fname);
+            statusEl.style.color = '#4CAF50';
+            statusEl.textContent = '✅ Uploaded';
+        } catch (err) {
+            console.error('Firebase upload failed:', err);
+            uploadedImgData = compressed;
+            statusEl.style.color = '#FF9800';
+            statusEl.textContent = '⚠️ Upload failed — saved locally';
+        }
     };
     reader.readAsDataURL(file);
 }
@@ -1173,17 +1217,25 @@ function handleBatchFiles(event) {
     const files = Array.from(event.target.files);
     if (!files.length) return;
     batchItems = [];
-    document.getElementById('batchCount').textContent = `Processing ${files.length} photo${files.length !== 1 ? 's' : ''}…`;
     document.getElementById('batchGrid').innerHTML = '';
-    let loaded = 0;
+    document.getElementById('batchCount').textContent = `Processing ${files.length} photo${files.length !== 1 ? 's' : ''}…`;
+    let done = 0;
     files.forEach((file, i) => {
         const id = 'b' + i;
         const reader = new FileReader();
         reader.onload = async ev => {
             const compressed = await compressImage(ev.target.result, 400, 0.78);
-            batchItems.push({ id, imageData: compressed, label: filenameToLabel(file.name) });
-            loaded++;
-            if (loaded === files.length) renderBatchGrid();
+            let imageUrl = compressed;
+            try {
+                const fname = `${Date.now()}_${i}_${file.name.replace(/[^a-z0-9._-]/gi, '_')}`;
+                imageUrl = await uploadToStorage(compressed, fname);
+            } catch (err) {
+                console.error('Upload failed for', file.name, err);
+            }
+            batchItems.push({ id, imageData: imageUrl, label: filenameToLabel(file.name) });
+            done++;
+            document.getElementById('batchCount').textContent = `Uploading… ${done} / ${files.length}`;
+            if (done === files.length) renderBatchGrid();
         };
         reader.readAsDataURL(file);
     });
